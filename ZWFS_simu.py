@@ -54,7 +54,7 @@ plt.imshow(img_PSF**0.5)
 plt.title('PSF')
 plt.subplot(122)
 plt.imshow(img_cropped)
-plt.tilt('ZWFS image')
+plt.title('ZWFS image')
 plt.show(block=False)
 
 
