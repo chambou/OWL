@@ -109,9 +109,6 @@ def process_seal_vzwfs(image, grid, index=0):
 if __name__ == "__main__":
 	use_simulation = True
 
-	# The hardware interface
-	sealZWFS = make_seal_interface()
-
 	# The model
 	Dtel = 1.0
 	Dgrid = 180 / 136 * Dtel
@@ -120,41 +117,57 @@ if __name__ == "__main__":
 	aperture = make_seal_pupil()(grid)
 	mask = aperture > 0
 
-	#
+	# The unaberrated SEAL wavefront
 	wf = Wavefront(aperture)
 	wf.total_power = 1.0
 
-	# ZWFS parameters
-	wavelength = 1 # in nm
+	# The ZWFS parameters. This is all for the left pupil
+	wavelength = 1
 	nphot = 1
-	diameter = np.array([1,1]) # dimple diameter in L/D - Left pupil and right pupil
-	depth = np.array([-np.pi/2,np.pi/2]) # dimple phase shift in radians - Left pupil and right pupil
-	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=9, pupil_diameter=Dtel)
+	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=5, pupil_diameter=Dtel)
 	Iref = local_zwfs(wf).power
 
 	# Make the zernike basis
 	num_modes = 20
 	zmodes = make_zernike_basis(num_modes, Dtel, grid, 5)
 
+	# The hardware interface
+	sealZWFS = make_seal_interface()
+	sealSLM = None
+	slm_grid = make_pupil_grid(1000, 1.0)
+	zmodes_slm = make_zernike_basis(num_modes, Dtel, slm_grid, 5)
+
+	# The aberration
 	sa = SurfaceAberration(grid, 0.05, Dtel)
 	sa.opd[mask] -= np.mean(sa.opd[mask])
+	if use_simulation:
+		phase_aberration = 2 * np.pi * sa.opd
+	else:
+		phase_aberration = grid.zeros()	# Need to get this from somewhere
 
-	# 
+	# The phase diversity probes
 	nmeas = 5
 	delta_rms = 0.3 / np.sqrt(num_modes)
 	zernike_coefficients = delta_rms * np.random.randn(nmeas, num_modes)	
-	
+
 	measurements = grid.zeros((nmeas,))
 	delta_phases = grid.zeros((nmeas,))
+	slm_delta_phases = slm_grid.zeros((nmeas,))
 	for i, dp in enumerate(delta_phases):
 		delta_phases[i] = zmodes.linear_combination(zernike_coefficients[i])
-		
-		apod = PhaseApodizer(delta_phases[i])
-		wfout = local_zwfs(sa(apod(wf)))
-		measurements[i] = wfout.power
+		slm_delta_phases[i] = zmodes_slm.linear_combination(zernike_coefficients[i])
+
+		if use_simulation:
+			apod = PhaseApodizer(delta_phases[i])
+			wfout = local_zwfs(sa(apod(wf)))
+			measurements[i] = wfout.power
+		else:
+			sealSLM.setPhase(slm_delta_phases[i])
+			image = sealZWFS.getImage()
+			measurements[i] = process_seal_vzwfs(image, grid)
 		
 		plt.subplot(1, nmeas, i+1)
-		imshow_field(wfout.power)
+		imshow_field(measurements[i])
 	plt.show()
 
 	phase_est = grid.zeros()
@@ -162,7 +175,7 @@ if __name__ == "__main__":
 		phase_est = zwfs_multistep_reconstruct(measurements, delta_phases, local_zwfs, aperture, wavelength, nphot, mask, phase_est, apply_unwrapping=False, lobasis=None)
 
 	plt.subplot(1,2,1)
-	imshow_field(2 * np.pi * sa.opd)
+	imshow_field(phase_aberration)
 	plt.colorbar()
 	
 	plt.subplot(1,2,2)
