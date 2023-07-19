@@ -772,6 +772,96 @@ class zernikeWFS:
         self.phase_rec = np.dot(self.mode2phase,cmd)
         #self.img_simulated = self.cropImg(self.getImageSimu(self.phase_rec))
 
+    def reconLinearModel_analytique(self,img_r,nIterRec=None,psf_img=None):
+        """ Linear reconstructor using Iterative algorithm
+        img: ZWFS recorded image (dark removed)
+        nIter: number of iteration for the reconstructor
+        """
+        # Number of iterations for reconstructor
+        if nIterRec is None:
+            nIterRec = self.nIterRec
+        # Pad image if true image
+        if img_r.shape[0] < 2*self.nPx*self.shannon:
+            img_r = np.pad(img_r,((int(self.nPx*self.shannon-self.nPx_img/2),int(self.nPx*self.shannon-self.nPx_img/2)),(int(self.nPx*self.shannon-self.nPx_img/2),int(self.nPx*self.shannon-self.nPx_img/2))), 'constant') # padded pupil
+        #  ========= JPL algortihm to reconstruct phase ==========
+        # Use a formula based on a interferometric model of the Zernike WFS - adapted to any phase-shift
+        # --- First PROPAGATION through reference ----
+        Psi_0 = self.propagRef(self.startPhase)
+        I_b = np.abs(Psi_0)**2 # reference intensities
+        
+        # Linear inverse formula
+        r = (img_r - self.pupil_pad-4*np.sin(self.depth/2)**2*I_b)/(4*np.sin(self.depth/2)*np.sqrt(self.pupil_pad*I_b))-np.sin(-np.angle(Psi_0)-self.depth/2)
+        phi_k = 1/(np.cos(-np.angle(Psi_0)-self.depth/2))*r
+        phi_k = np.nan_to_num(phi_k,nan=0.0)
+
+        phi_k = phi_k*self.pupil_pad_footprint
+        phi_k = phi_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]      
+        # --- LOOP PROPAGATION ----
+        err_k_previous = float('inf') # for stopping criteria    
+        for k in range(0,nIterRec):
+                Psi_k = self.propagRef(phi_k)
+                I_b = np.abs(Psi_k)**2
+                
+                # Linear inverse formula
+                r = (img_r - self.pupil_pad-4*np.sin(self.depth/2)**2*I_b)/(4*np.sin(self.depth/2)*np.sqrt(self.pupil_pad*I_b))-np.sin(-np.angle(Psi_k)-self.depth/2)
+                phi_k = 1/(np.cos(-np.angle(Psi_k)-self.depth/2))*r
+                phi_k = np.nan_to_num(phi_k,nan=0.0)
+
+                phi_k = phi_k*self.pupil_pad_footprint
+                phi_k =  phi_k - self.pupil_pad_footprint*np.sum(np.sum(phi_k))/np.sum(np.sum(self.pupil_pad_footprint))
+                phi_k = phi_k*self.pupil_pad_footprint
+                phi_k = phi_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]         
+                # STOPPING CRITERIA -----------
+                # Stop if error decrease less than n_p percent
+                image_k = self.getImageSimu(phi_k) # Record image of estimated phase through Zernike 
+                image_k = image_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]
+                img_red = img_r[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]
+                err_k = error_rms(image_k,img_red)
+                if False:#(err_k_previous - err_k)/err_k_previous < self.stopping_criteria or err_k >= err_k_previous: # break if STOPPING CONDITIONS ARE MET
+                        print('local minimum found')
+                        print(k)
+                        break
+                else:
+                        err_k_previous = err_k
+                        #phi = phi_k
+        # ----- Record last phase --------
+        self.img_simulated = self.cropImg(self.getImageSimu(phi_k))
+        self.phase_rec = phi_k
+        self.opd_rec = self.phase_rec*self.wavelength/(2*np.pi)
+        self.phase_rec_unwrap = phase_unwrap(phi_k)*self.pupil_footprint
+
+
+    def reconLinearModel(self,img,nIterRec=None,psf_img=None):
+        # Number of iterations for reconstructor
+        self.img = img
+        if nIterRec is None:
+            nIterRec = self.nIterRec
+        # Left pupil -------------
+        if self.pupilRec == 'left':
+            self.switchMask('left')
+            img_r = img[:,0:int(self.nPx_img)]#[self.left_y-int(self.nPx/2):self.left_y+int(self.nPx/2),self.left_x-int(self.nPx/2):self.left_x+int(self.nPx/2)]#
+            self.reconLinearModel_analytique(img_r,nIterRec,psf_img)
+        # Right pupil -------------
+        elif self.pupilRec == 'right':
+            self.switchMask('right')
+            img_r = img[:,int(self.nPx_img):]#[self.right_y-int(self.nPx/2):self.right_y+int(self.nPx/2),self.right_x-int(self.nPx/2):self.right_x+int(self.nPx/2)]#
+            self.reconLinearModel_analytique(img_r,nIterRec,psf_img)
+        # Both pupils -------------
+        elif self.pupilRec == 'both':
+            # Left pupil
+            self.switchMask('left')
+            img_r = img[:,0:int(self.nPx_img)]#[self.left_y-int(self.nPx/2):self.left_y+int(self.nPx/2),self.left_x-int(self.nPx/2):self.left_x+int(self.nPx/2)]#
+            self.reconLinearModel_analytique(img_r,nIterRec,psf_img)
+            self.phase_rec_left = np.copy(self.phase_rec)
+            # right pupil
+            self.switchMask('right')
+            img_r = img[:,int(self.nPx_img):]#[self.right_y-int(self.nPx/2):self.right_y+int(self.nPx/2),self.right_x-int(self.nPx/2):self.right_x+int(self.nPx/2)]#
+            self.reconLinearModel_analytique(img_r,nIterRec,psf_img)
+            self.phase_rec_right = np.copy(self.phase_rec)
+            # combine
+            self.reconPhaseShifted()
+            self.pupilRec = 'both'
+
     def reconNonLinear(self,img,nIterRec=None,psf_img=None):
         # Number of iterations for reconstructor
         self.img = img
@@ -863,14 +953,14 @@ class zernikeWFS:
                         break
                 else:
                         err_k_previous = err_k
-                        phi = phi_k
+                        #phi = phi_k
                 # ---------------------------
                 
         # Record last phase
         self.img_simulated = self.cropImg(self.getImageSimu(phi_k))
-        self.phase_rec = phi
+        self.phase_rec = phi_k
         self.opd_rec = self.phase_rec*self.wavelength/(2*np.pi)
-        self.phase_rec_unwrap = phase_unwrap(phi)*self.pupil_footprint
+        self.phase_rec_unwrap = phase_unwrap(phi_k)*self.pupil_footprint
 
     def reconJPL(self,img_r,nIterRec=None,psf_img=None):
         """ Non-linear reconstructor using Iterative algorithm
@@ -922,12 +1012,12 @@ class zernikeWFS:
                         break
                 else:
                         err_k_previous = err_k
-                        phi = phi_k
+                        #phi = phi_k
         # ----- Record last phase --------
         self.img_simulated = self.cropImg(self.getImageSimu(phi_k))
-        self.phase_rec = phi
+        self.phase_rec = phi_k
         self.opd_rec = self.phase_rec*self.wavelength/(2*np.pi)
-        self.phase_rec_unwrap = phase_unwrap(phi)*self.pupil_footprint
+        self.phase_rec_unwrap = phase_unwrap(phi_k)*self.pupil_footprint
              
         
     def reconPhaseShifted(self):

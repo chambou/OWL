@@ -11,19 +11,20 @@ from tools import *
 #%% ################ ZWFS #########################################
 pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
 pup = makePupil(pupil_im.shape[1]/2,pupil_im.shape[1]) # if you prefer to start with perfect full circular aperture
+pup_im = np.stack((pup,pup),axis = 0)
 position_pups = np.load('position_pups.npy') # to match SEAL dimensions
 # ----- CREATE ZWFS object ----
 shannon = 4 # to well oversample the dimple (2 could be enough tough)
 wavelength = 635 # in nm
 diameter = np.array([1,1]) # dimple diameter in L/D - Left pupil and right pupil
 depth = np.array([-np.pi/2,np.pi/2]) # dimple phase shift in radians - Left pupil and right pupil
-ZWFS = zernikeWFS(pupil_im,position_pups,diameter,depth,shannon,wavelength,0) # Create object - 0 = simulation mode
+ZWFS = zernikeWFS(pup_im,position_pups,diameter,depth,shannon,wavelength,0) # Create object - 0 = simulation mode
 
 #%% ################ Load turbulence ##########################
 nPx = ZWFS.nPx # match ZWFS pixel resolution
 telescope_diameter = 10
 wavelength = 635*1e-09
-fried_parameter = 5
+fried_parameter = 2.5
 velocity = 5
 outer_scale = 40
 timeSampling = 0.001
@@ -61,9 +62,31 @@ plt.show(block=False)
 #%% ################## Recosntruction ###########################
 ZWFS.pupilRec = 'both' # you can choose either: 'right', 'left' or 'both'
 ZWFS.algo = 'JPL' # JPL = iterative arcsin reconstructor / cam also choose GS
-ZWFS.nIterRec = 5 # number of iteration
+ZWFS.nIterRec = 15 # number of iteration
 
 ZWFS.reconNonLinear(img_cropped) # Reconstructiom
+
+# ---- Plot -----
+plt.figure(figsize=(12,3))
+plt.subplot(131)
+plt.imshow(phase_turbu_filtered*ZWFS.pupil_footprint)
+plt.title('Input phase')
+plt.colorbar()
+plt.subplot(132)
+plt.imshow(ZWFS.phase_rec)
+plt.title('Reconstructed phase')
+plt.colorbar()
+plt.subplot(133)
+plt.imshow(ZWFS.phase_rec_unwrap)
+plt.title('Reconstructed phase - unwrap')
+plt.colorbar()
+plt.show(block=False)
+
+#%% Linear iterative reconstruction
+ZWFS.pupilRec = 'both' # you can choose either: 'right', 'left' or 'both'
+ZWFS.nIterRec = 10 # number of iteration
+
+ZWFS.reconLinearModel(img_cropped) # Reconstructiom
 
 # ---- Plot -----
 plt.figure(figsize=(12,3))
