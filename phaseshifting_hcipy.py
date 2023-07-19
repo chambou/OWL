@@ -6,8 +6,8 @@ from hcipy import *
 import numpy as np
 from matplotlib import pyplot as plt
 
-from zwfs import *
-from tools import *
+#from zwfs import *
+#from tools import *
 
 def zwfs_multistep_reconstruct(Imeas, delta_phases, zwfs, aperture, wavelength, nphot, mask, phase_start=None, apply_unwrapping=False, lobasis=None):
 	'''A multi-timestep reconstruction algorithm.
@@ -76,11 +76,14 @@ def zwfs_multistep_reconstruct(Imeas, delta_phases, zwfs, aperture, wavelength, 
 	
 	return phase
 
-def make_seal_pupil(index=0):
+def make_seal_pupil(sealZWFS, index=0):
 	def func(grid):
-		pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
-		pupil_im = np.pad(pupil_im, ((0,0), (22,22), (22,22)))
-		return Field(pupil_im[index].ravel(), grid)
+		#pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
+		pupil_im = sealZWFS.pupil_left
+		#pupil_im = np.pad(pupil_im, ((0,0),(22,22), (22,22)))
+		#return Field(pupil_im[0].ravel(), grid)
+		pupil_im = np.pad(pupil_im, ((22,22), (22,22)))
+		return Field(pupil_im.ravel(), grid)
 	return func
 
 def make_seal_interface():
@@ -107,14 +110,15 @@ def process_seal_vzwfs(image, grid, index=0):
 	
 
 if __name__ == "__main__":
-	use_simulation = True
+	use_simulation = False
 
 	# The model
 	Dtel = 1.0
 	Dgrid = 180 / 136 * Dtel
 	grid = make_pupil_grid(180, Dgrid)
 	
-	aperture = make_seal_pupil()(grid)
+	caperture = make_circular_aperture(1.0)(grid)
+	aperture = make_seal_pupil(sealZWFS)(grid)
 	mask = aperture > 0
 
 	# The unaberrated SEAL wavefront
@@ -124,7 +128,7 @@ if __name__ == "__main__":
 	# The ZWFS parameters. This is all for the left pupil
 	wavelength = 1
 	nphot = 1
-	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=5, pupil_diameter=Dtel)
+	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=15, pupil_diameter=Dtel)
 	Iref = local_zwfs(wf).power
 
 	# Make the zernike basis
@@ -132,9 +136,10 @@ if __name__ == "__main__":
 	zmodes = make_zernike_basis(num_modes, Dtel, grid, 5)
 
 	# The hardware interface
-	sealZWFS = make_seal_interface()
-	sealSLM = None
-	slm_grid = make_pupil_grid(1000, 1.0)
+	#sealZWFS = make_seal_interface()
+	#sealZWFS = ZWFS
+	sealSLM = SLM()
+	slm_grid = make_pupil_grid(sealSLM.nPx, 1.0)
 	zmodes_slm = make_zernike_basis(num_modes, Dtel, slm_grid, 5)
 
 	# The aberration
@@ -147,10 +152,11 @@ if __name__ == "__main__":
 
 	# The phase diversity probes
 	nmeas = 5
-	delta_rms = 0.3 / np.sqrt(num_modes)
+	delta_rms = 0.1 / np.sqrt(num_modes)
 	zernike_coefficients = delta_rms * np.random.randn(nmeas, num_modes)	
 
 	measurements = grid.zeros((nmeas,))
+	model_measurements = grid.zeros((nmeas,))
 	delta_phases = grid.zeros((nmeas,))
 	slm_delta_phases = slm_grid.zeros((nmeas,))
 	for i, dp in enumerate(delta_phases):
@@ -162,23 +168,31 @@ if __name__ == "__main__":
 			wfout = local_zwfs(sa(apod(wf)))
 			measurements[i] = wfout.power
 		else:
-			sealSLM.setPhase(slm_delta_phases[i])
+			sealSLM.setPhase(slm_delta_phases[i].shaped)
+			time.sleep(1)
 			image = sealZWFS.getImage()
 			measurements[i] = process_seal_vzwfs(image, grid)
+
+			apod = PhaseApodizer(delta_phases[i])
+			wfout = local_zwfs(apod(wf))
+			model_measurements[i] = wfout.power
 		
-		plt.subplot(1, nmeas, i+1)
+		plt.subplot(2, nmeas, i+1)
 		imshow_field(measurements[i])
+		plt.subplot(2, nmeas, i+6)
+		imshow_field(model_measurements[i])
 	plt.show()
 
 	phase_est = grid.zeros()
 	for k in range(5):
 		phase_est = zwfs_multistep_reconstruct(measurements, delta_phases, local_zwfs, aperture, wavelength, nphot, mask, phase_est, apply_unwrapping=False, lobasis=None)
-
+	scale = abs(phase_est).max()
 	plt.subplot(1,2,1)
-	imshow_field(phase_aberration)
+	imshow_field(phase_aberration, vmin=-scale, vmax=scale, cmap='bwr')
 	plt.colorbar()
 	
 	plt.subplot(1,2,2)
-	imshow_field(phase_est)
+	imshow_field(phase_est, vmin=-scale, vmax=scale, cmap='bwr')
 	plt.colorbar()
 	plt.show()
+

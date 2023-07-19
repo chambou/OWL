@@ -639,47 +639,139 @@ class zernikeWFS:
     
     ################################ CALIBRATION PROCESS #######################  
     
-    def load_pokeMatrix(self,pokeMatrix,validActuators,thres,calib=1):
-        """ Load poke matrix computed through calibration process """
+    def load_pokeMatrix(self,pokeMatrix,calib=0):
+        """
+        Load a poke matrix computed through calibration process, and compute its pseudo-inverse.
+        It is useful to project reconstructed phase onto DM actuators.(This poke matrix is therefore associated with a diven dm.)
+
+            Parameters:
+                pokeMatrix (np.array): poke phase in WFS space
+                calib (bool): launching or not the synthetic calibration
+        
+        """
         self.mode2phase = pokeMatrix
         self.phase2mode = np.linalg.pinv(self.mode2phase,1/30)
-        self.validActuators = validActuators
         # --- End-to-End calibration matrix ------
         if calib == 1:
-            self.calibrate(thres)
-         
-    def mapValidCmd(self,cmd_vector):
-        """ Map commands vector to map"""
-        # map command vector to surface command on WFS valid actuators
-        c_map = np.zeros(self.validActuators.shape).astype('float32')
-        k = 0
-        for i in range(0,c_map.shape[0]):
-                for j in range(0,c_map.shape[0]):
-                    if self.validActuators[i][j] == 1:
-                            c_map[i][j] = cmd_vector[k]
-                            k = k + 1
-        return c_map
+            self.calibrateSimu(1/30)
+
+    def calibrate(self,dm,modal=0,amp_calib=None):
+        """
+        Push-pull calibration for the given DM. It can be zonal or modal (only Zernike modes for now).
+
+            Parameters:
+                dm (DM_seal object): DM for used for calibration
+                modal (bool): Set if the calibration is done on a modal basis - Zernike modes (=1) - or not (=0)
+        """
+        if amp_calib is None:
+            amp_calib = 0.05
+
+        if modal == 0:
+            self.modal = 0
+            # ---- ZONAL ---------
+            self.validActuators = dm.valid_actuators_map
+            self.intMat = np.zeros((self.nPx_img**2,int(np.sum(dm.valid_actuators_map))))
+            compt = 0
+            for i in range(dm.nAct):
+                for j in range(dm.nAct):
+                    if dm.valid_actuators_map[i,j] == 1:
+                        # --------- PUSH --------
+                        dm.pokeAct(amp_calib,[i,j])
+                        time.sleep(0.1)
+                        s_push = self.getImage()
+                        # --------- PULL --------
+                        dm.pokeAct(-amp_calib,[i,j])
+                        time.sleep(0.1)
+                        s_pull = self.getImage()
+                        # -------- Push-pull ------
+                        s = (s_push-s_pull)/(2*amp_calib)
+                        self.intMat[:,compt] = s.ravel()
+                        compt = compt + 1
+                        print('Percentage done: ',compt/int(np.sum(dm.valid_actuators_map)))
+        elif modal == 1:
+            self.modal = 1
+            nModes = dm.Z2C.shape[1]
+            self.Z2C = dm.Z2C
+            self.intMat = np.zeros((self.nPx_img*self.nPx_img,nModes))
+            for k in range(nModes):
+                    # --------- PUSH --------
+                    dm.pokeZernike(amp_calib,k+2)
+                    time.sleep(0.1)
+                    s_push = self.getImage()
+                    s_push = s_push[:,0:int(self.nPx_img)]
+                    # --------- PULL --------
+                    dm.pokeZernike(-amp_calib,k+2)
+                    time.sleep(0.1)
+                    s_pull = self.getImage()
+                    s_pull = s_pull[:,0:int(self.nPx_img)]
+                    # -------- Push-pull ------
+                    s = (s_push-s_pull)/(2*amp_calib)
+                    self.intMat[:,k] = s.ravel()
+                    print('Percentage done: ',100*k/nModes)
+        dm.setFlatSurf()
+        self.compute_cmdMat(self.intMat)
+
+    def compute_cmdMat(self,intMat,thres=None):
+        """
+        Compute pseudo inverse of the interaction matrix.
+
+            Parameters:
+                threshold (float - optional): conditionning for pseudo-inverse computation.
+        """
+        if thres is None:
+            thres = 1/30 # by default
+        self.cmdMat = np.linalg.pinv(intMat,thres)
     
-    def calibrate(self,thres,mode2phase=None):
-        """ Synthetic interaction matrix """
+    def calibrateSimu(self,mode2phase=None,phaseRef=None):
+        """ 
+        Compute synthetic interaction matrix.
+
+            Parameters:
+                mode2phase (np.array): mode to calibrate. By default, it is the pokeMatrix that was loaded.
+        """
         if not(mode2phase is None):
+            self.modal = 1
+            self.Z2C = 0
             self.mode2phase = mode2phase
             self.phase2mode = np.linalg.pinv(self.mode2phase,1/30)
+        else:
+            self.modal = 0
+        if phaseRef is None:
+            phaseRef = np.zeros((self.nPx,self.nPx))
         # -- Linear Calibration -----
         amp_calib = 0.00001
-        self.intMat = np.zeros((self.nPx_img*self.nPx_img,self.mode2phase.shape[1]))
+        self.intMat_simu = np.zeros((self.nPx_img*self.nPx_img,self.mode2phase.shape[1]))
         for k in range(self.mode2phase.shape[1]):
+                print(k)
                 poke_calib = self.mode2phase[:,k].reshape(int(np.sqrt(self.mode2phase.shape[0])),int(np.sqrt(self.mode2phase.shape[0])))
                 # --------- PUSH --------
-                I_push = self.cropImg(self.getImageSimu(amp_calib*poke_calib))
+                I_push = self.cropImg(self.getImageSimu(phaseRef+amp_calib*poke_calib))
+                I_push = I_push[:,0:int(self.nPx_img)]
                 I_push = I_push/np.sum(I_push) # normalisation
                 # --------- PULL --------
-                I_pull = self.cropImg(self.getImageSimu(-amp_calib*poke_calib))
+                I_pull = self.cropImg(self.getImageSimu(phaseRef-amp_calib*poke_calib))
+                I_pull = I_pull[:,0:int(self.nPx_img)]
                 I_pull = I_pull/np.sum(I_pull) # normalisation
                 # -------- Push-pull ------
                 s = (I_push-I_pull)/(2*amp_calib)
-                self.intMat[:,k] = s.ravel()
-        self.cmdMat = np.linalg.pinv(self.intMat,thres)
+                self.intMat_simu[:,k] = s.ravel()
+        self.compute_cmdMat(self.intMat_simu)
+
+    def load_intMat(self,intMat,dm,modal=0):
+        """ 
+        Load true interaction matrix already computed before.
+        Precise if it is a modal or a zonal matrix (zonal by default).
+
+            Parameters:
+                intMat (np.array): Interaction Matrix to be loaded
+                dm (DM_seal object): DM associated with this interaction matrix
+                modal (bool): if it is modal or not (=0 by default)
+        """
+        self.modal=modal
+        if modal == 1:
+            self.Z2C = dm.Z2C
+        self.intMat = intMat
+        self.compute_cmdMat(self.intMat)
 
     ################################ PROPAGATION ####################### 
 
@@ -764,12 +856,17 @@ class zernikeWFS:
         self.switchMask(pupilRec)
         return img
 
-    def reconLinear(self,img):
+    def reconLinear(self,img_input):
         """ Linear reconstructor using synthetic interaction matrix """
+        # keeping on pupil only
+        img = img_input[:,0:int(self.nPx_img)]
+        img0 = self.img0[:,0:int(self.nPx_img)]
+        # -----
         self.img = img
-        dI = img.ravel()/np.sum(img)-self.img0.ravel()/np.sum(self.img0) # reduced intensities
+        dI = img.ravel()/np.sum(img)-img0.ravel()/np.sum(img0) # reduced intensities
         cmd = np.dot(self.cmdMat,dI)
         self.phase_rec = np.dot(self.mode2phase,cmd)
+        self.phase_rec = np.reshape(self.phase_rec,(self.nPx,self.nPx))
         #self.img_simulated = self.cropImg(self.getImageSimu(self.phase_rec))
 
     def reconLinearModel_analytique(self,img_r,nIterRec=None,psf_img=None):
@@ -942,6 +1039,7 @@ class zernikeWFS:
                 phi_k[np.isnan(phi_k)] = 0 # avoid NaN values
                 phi_k = phi_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]
                 # STOPPING CRITERIA -----------
+                '''
                 # Stop if error decrease less than n_p percent
                 image_k = self.getImageSimu(phi_k) # Record image of estimated phase through Zernike 
                 image_k = image_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]
@@ -954,6 +1052,7 @@ class zernikeWFS:
                 else:
                         err_k_previous = err_k
                         #phi = phi_k
+                '''
                 # ---------------------------
                 
         # Record last phase
@@ -1001,6 +1100,7 @@ class zernikeWFS:
                 phi_k =  phi_k - self.pupil_pad_footprint*np.sum(np.sum(phi_k))/np.sum(np.sum(self.pupil_pad_footprint))
                 phi_k = phi_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]         
                 # STOPPING CRITERIA -----------
+                '''
                 # Stop if error decrease less than n_p percent
                 image_k = self.getImageSimu(phi_k) # Record image of estimated phase through Zernike 
                 image_k = image_k[int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2),int(self.shannon*self.nPx+1-self.nPx/2-1):int(self.shannon*self.nPx+self.nPx/2)]
@@ -1013,6 +1113,7 @@ class zernikeWFS:
                 else:
                         err_k_previous = err_k
                         #phi = phi_k
+                '''
         # ----- Record last phase --------
         self.img_simulated = self.cropImg(self.getImageSimu(phi_k))
         self.phase_rec = phi_k
