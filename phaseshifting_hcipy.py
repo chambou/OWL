@@ -76,6 +76,65 @@ def zwfs_multistep_reconstruct(Imeas, delta_phases, zwfs, aperture, wavelength, 
 	
 	return phase
 
+def zwfs_iterative_reconstruct(Imeas, zwfs, aperture, wavelength, nphot, mask, phase_start=None, mode='nonlinear'):
+	'''
+	mode : enum
+		mode can either be, 'linear', 'quadratic', 'nonlinear' or 'ms-nonlinear'
+	'''
+
+	if phase_start is None:
+		phase_start = aperture.grid.zeros()
+
+	# Create model electric field
+	wf_est = Wavefront(aperture * np.exp(1j * phase_start), wavelength)
+	wf_est.total_power = nphot
+	I0 = wf_est.power
+	
+	wf_zwfs = zwfs.forward(wf_est)
+	Imodel = wf_zwfs.power
+	mask2 = mask * (Imodel > 0)
+
+	Eref = wf_zwfs.electric_field - wf_est.electric_field
+	model_phase = np.angle(Eref)
+
+	# Create the reference beam that is being interfered
+	wf_ref = Wavefront(Eref, wavelength)
+	Iref = wf_ref.power
+
+	# MLE based correction for the difference in power
+	Ncorr = np.sum(Imeas) / np.sum(Imodel)
+
+	Inorm = aperture.grid.zeros() 
+	phase = aperture.grid.zeros()
+
+	if mode == 'linear':
+		phase = Imeas / Ncorr - Imodel
+		phase[mask2] /= 2 * (np.sqrt(I0 * Iref) * np.sin(model_phase))[mask2]
+
+	elif mode == 'quadratic':
+		Inorm = Imeas / Ncorr - I0 - Iref
+		Inorm[mask2] /= 2 * (np.sqrt(I0 * Iref))[mask2]
+		
+		a = -np.cos(model_phase)/2
+		b = -np.sin(model_phase)
+		c = -2 * a - Inorm
+
+		phase[mask2] = (-b[mask2] + np.sqrt(b**2 - 4 * a * c)[mask2]) / (2 * a[mask2])
+	
+	elif mode == 'nonlinear':
+		# Reconstruct the carrier fringe
+		Inorm = (Imeas/Ncorr - I0 - Iref)
+		Inorm = Inorm / (2 * np.sqrt(I0 * Iref))
+		Inorm = np.clip(Inorm, -1, 1)
+
+		phase[mask2] = model_phase[mask2] - np.arccos(Inorm[mask2])
+
+	else:
+		raise NotImplementedError()
+
+	phase[mask] -= np.median(phase[mask])
+	return phase
+
 def make_seal_pupil(sealZWFS, index=0):
 	def func(grid):
 		#pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
@@ -151,8 +210,8 @@ if __name__ == "__main__":
 		phase_aberration = grid.zeros()	# Need to get this from somewhere
 
 	# The phase diversity probes
-	nmeas = 5
-	delta_rms = 0.1 / np.sqrt(num_modes)
+	nmeas = 1
+	delta_rms = 0. / np.sqrt(num_modes)
 	zernike_coefficients = delta_rms * np.random.randn(nmeas, num_modes)	
 
 	measurements = grid.zeros((nmeas,))
@@ -185,7 +244,9 @@ if __name__ == "__main__":
 
 	phase_est = grid.zeros()
 	for k in range(5):
-		phase_est = zwfs_multistep_reconstruct(measurements, delta_phases, local_zwfs, aperture, wavelength, nphot, mask, phase_est, apply_unwrapping=False, lobasis=None)
+		phase_est = zwfs_iterative_reconstruct(measurements[0], local_zwfs, aperture, wavelength, nphot, mask, phase_est, mode='nonlinear')
+		#phase_est = zwfs_multistep_reconstruct(measurements, delta_phases, local_zwfs, aperture, wavelength, nphot, mask, phase_est, apply_unwrapping=False, lobasis=None)
+
 	scale = abs(phase_est).max()
 	plt.subplot(1,2,1)
 	imshow_field(phase_aberration, vmin=-scale, vmax=scale, cmap='bwr')
