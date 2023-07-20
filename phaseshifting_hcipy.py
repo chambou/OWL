@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-#from zwfs import *
 from hcipy import *
 import numpy as np
 from matplotlib import pyplot as plt
-
-#from zwfs import *
-#from tools import *
 
 def zwfs_multistep_reconstruct(Imeas, delta_phases, zwfs, aperture, wavelength, nphot, mask, phase_start=None, apply_unwrapping=False, lobasis=None):
 	'''A multi-timestep reconstruction algorithm.
@@ -138,45 +133,29 @@ def zwfs_iterative_reconstruct(Imeas, zwfs, aperture, wavelength, nphot, mask, p
 def make_seal_pupil(sealZWFS, index=0):
 	def func(grid):
 		#pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
-		pupil_im = sealZWFS.pupil_left
 		#pupil_im = np.pad(pupil_im, ((0,0),(22,22), (22,22)))
 		#return Field(pupil_im[0].ravel(), grid)
+		pupil_im = np.sqrt(sealZWFS.pupil_left)
 		pupil_im = np.pad(pupil_im, ((22,22), (22,22)))
 		return Field(pupil_im.ravel(), grid)
 	return func
-
-def make_seal_interface():
-	''' Code to make the hardware interface to the seal testbed.
-	'''
-	pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
-	pup = makePupil(pupil_im.shape[1]/2,pupil_im.shape[1]) # if you prefer to start with perfect full circular aperture
-	position_pups = np.load('position_pups.npy') # to match SEAL dimensions
-
-	# ----- CREATE ZWFS object ----
-	shannon = 4 # to well oversample the dimple (2 could be enough tough)
-	wavelength = 635 # in nm
-	diameter = np.array([1,1]) # dimple diameter in L/D - Left pupil and right pupil
-	depth = np.array([-np.pi/2,np.pi/2]) # dimple phase shift in radians - Left pupil and right pupil
-	sealZWFS = zernikeWFS(pupil_im,position_pups,diameter,depth,shannon,wavelength,0) # Create object - 0 = simulation mode
-	return sealZWFS
-
 
 def process_seal_vzwfs(image, grid, index=0):
 	if index == 0:
 		return Field(image[:, 0:180].ravel(), grid)
 	else:
 		return Field(image[:, 180:].ravel(), grid)
-	
 
 if __name__ == "__main__":
-	use_simulation = False
+	use_simulation = True
+	#sealZWFS = ZWFS
+	#sealSLM = SLM()
 
 	# The model
 	Dtel = 1.0
 	Dgrid = 180 / 136 * Dtel
 	grid = make_pupil_grid(180, Dgrid)
 	
-	caperture = make_circular_aperture(1.0)(grid)
 	aperture = make_seal_pupil(sealZWFS)(grid)
 	mask = aperture > 0
 
@@ -185,9 +164,7 @@ if __name__ == "__main__":
 	wf.total_power = 1.0
 
 	# The ZWFS parameters. This is all for the left pupil
-	wavelength = 1
-	nphot = 1
-	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=15, pupil_diameter=Dtel)
+	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=0.96, num_pix=15, pupil_diameter=Dtel)
 	Iref = local_zwfs(wf).power
 
 	# Make the zernike basis
@@ -195,9 +172,6 @@ if __name__ == "__main__":
 	zmodes = make_zernike_basis(num_modes, Dtel, grid, 5)
 
 	# The hardware interface
-	#sealZWFS = make_seal_interface()
-	#sealZWFS = ZWFS
-	sealSLM = SLM()
 	slm_grid = make_pupil_grid(sealSLM.nPx, 1.0)
 	zmodes_slm = make_zernike_basis(num_modes, Dtel, slm_grid, 5)
 
@@ -256,4 +230,3 @@ if __name__ == "__main__":
 	imshow_field(phase_est, vmin=-scale, vmax=scale, cmap='bwr')
 	plt.colorbar()
 	plt.show()
-
