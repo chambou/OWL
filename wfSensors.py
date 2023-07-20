@@ -545,6 +545,7 @@ class zernikeWFS:
         self.nPx_img_x = position_pups[4]
         self.nPx_img_y = position_pups[5]
         # ---------- Pupil and resolution -----------------
+        self.pupil_tel = pupil_tel.copy()
         self.nPx = pupil_tel.shape[1] # Resolution in our pupil
         self.wavelength = wavelength # useful only for DIPSLAYING phase in NANOMETERS
         self.shannon = shannon # Shannon sampling : 1 = 2px per lambda/D - Recommended parameter: shannon = 2
@@ -560,6 +561,7 @@ class zernikeWFS:
         self.diameter_left = diameter[0] # Diameter in lambda/D at lambda = wavelength
         self.depth_left = depth[0] # Depth in phase shift (radians) at lambda = wavelength
         self.mask_left,self.mask_ref_left = self.makeMask(self.diameter_left,self.depth_left)
+
         self.switchMask('left') # left mask by default
         # ---------- RIGHT pupil -----------
         self.pupil_right = pupil_tel[1,:,:] # Pupil as recorded when off dimple (INTENSITIES)
@@ -606,6 +608,7 @@ class zernikeWFS:
     def switchMask(self,pupil_choice = 'left'):
             self.pupilRec = pupil_choice
             if pupil_choice == 'left':
+                self.amp = self.pupil_tel[0]**.5
                 self.mask = self.mask_left
                 self.mask_ref = self.mask_ref_left
                 self.diameter = self.diameter_left
@@ -615,6 +618,7 @@ class zernikeWFS:
                 self.pupil_pad = self.pupil_pad_left
                 self.pupil_pad_footprint = self.pupil_pad_footprint_left
             elif pupil_choice == 'right':
+                self.amp = self.pupil_tel[1]**.5
                 self.mask = self.mask_right
                 self.mask_ref = self.mask_ref_right
                 self.diameter = self.diameter_right
@@ -721,6 +725,19 @@ class zernikeWFS:
         if thres is None:
             thres = 1/30 # by default
         self.cmdMat = np.linalg.pinv(intMat,thres)
+            self.calibrate(thres)
+         
+    def mapValidCmd(self,cmd_vector):
+        """ Map commands vector to map"""
+        # map command vector to surface command on WFS valid actuators
+        c_map = np.zeros(self.validActuators.shape).astype('float32')
+        k = 0
+        for i in range(0,c_map.shape[0]):
+            for j in range(0,c_map.shape[0]):
+                if self.validActuators[i][j] == 1:
+                            c_map[i][j] = cmd_vector[k]
+                            k = k + 1
+        return c_map
     
     def calibrateSimu(self,mode2phase=None,phaseRef=None):
         """ 
@@ -777,11 +794,25 @@ class zernikeWFS:
 
     def propag(self,phi,psf_img=None):
         """ PROPAGATION of the EM field """
-        phi_pad =  np.pad(phi,((self.pad,self.pad),(self.pad,self.pad)), 'constant') # padded pupil
+        if not hasattr(self, 'pad_buffer'):
+            self.pad_buffer = np.pad(self.amp*np.exp(1j*phi),((self.pad,self.pad),(self.pad,self.pad)), 'constant') # padded pupil
+        else:
+            self.pad_buffer[self.pad:-self.pad, self.pad:-self.pad] = self.amp*np.exp(1j*phi)
+
+        return self.propag_internal_buffer(psf_img=psf_img)
+    
+    def propagFromE(self, E):
+        if not hasattr(self, 'pad_buffer'):
+            self.pad_buffer = np.pad(E, ((self.pad,self.pad),(self.pad,self.pad)), 'constant') # padded pupil
+        else:
+            self.pad_buffer[self.pad:-self.pad, self.pad:-self.pad] = E
+
+        return self.propag_internal_buffer()
+
+    def propag_internal_buffer(self, psf_img=None):
         # ---- PROPAGATION of the EM field ----
         # To first focal plane
-        amp = np.sqrt(self.pupil_pad) # amplitude = sqrt(intensities)
-        Psi_FP = fftshift(fft2(fftshift(amp*np.exp(1j*phi_pad))))
+        Psi_FP = fftshift(fft2(fftshift(self.pad_buffer)))
         # Multiply by Zernike Phase mask
         if psf_img is None:
             Psi_FP = self.mask*Psi_FP
@@ -839,22 +870,85 @@ class zernikeWFS:
         stacked_img[:,self.nPx_img_y:] = img_R
         return stacked_img
     
-    def getImageSimu(self,phi):
+    def getImageSimuFromE(self, E, doEfield: bool = False):
         """ Simulation of Zernike WFS image """
         pupilRec = self.pupilRec
         # Intensities - LEFT
         self.switchMask('left')
-        Psi_PP = self.propag(phi)
-        img_left = np.abs(Psi_PP)**2
+        Psi_left = self.propagFromE(E)
+        img_left = np.abs(Psi_left)**2
         # Intensities - RIGHT
         self.switchMask('right')
-        Psi_PP = self.propag(phi)
-        img_right = np.abs(Psi_PP)**2
+        Psi_right = self.propagFromE(E)
+        img_right = np.abs(Psi_right)**2
         # Full image
         img = np.concatenate((img_left,img_right),axis = 1)
         # Back to pupilRec
         self.switchMask(pupilRec)
-        return img
+
+        if not doEfield:
+            return img
+        else:
+            return img, np.concatenate((Psi_left, Psi_right), axis=1)
+
+    def getImageSimu(self, phi, doEfield: bool=False):
+        """ Simulation of Zernike WFS image """
+        pupilRec = self.pupilRec
+        # Intensities - LEFT
+        self.switchMask('left')
+        Psi_left = self.propag(phi)
+        img_left = np.abs(Psi_left)**2
+        # Intensities - RIGHT
+        self.switchMask('right')
+        Psi_right = self.propag(phi)
+        img_right = np.abs(Psi_right)**2
+        # Full image
+        img = np.concatenate((img_left,img_right),axis = 1)
+        # Back to pupilRec
+        self.switchMask(pupilRec)
+
+        if not doEfield:
+            return img
+        else:
+            return img, np.concatenate((Psi_left, Psi_right), axis=1)
+
+    def reconGradDescent(self, img: np.ndarray, modal_basis: np.ndarray):
+        self.img = img
+
+        if self.pupilRec == 'left':
+            img_work = img[:,:int(self.nPx_img)]
+        elif self.pupilRec == 'right':
+            img_work = img[:,int(self.nPx_img):]
+        elif self.pupilRec == 'both':
+            img_work = img
+        else:
+            raise AssertionError('(left|right|both)')
+        
+        import scipy.optimize as scopt
+
+        n = self.nPx
+
+        Estart = np.random.randn(2, n, n).astype(np.float32)
+        imgflat = img.flatten()
+        global n_call
+        n_call = 0
+
+        def optfun(coeffs, img):
+            global n_call
+            n_call += 1
+            print(f'Call {n_call}')
+
+            phi_map = np.sum().reshape(n,n)
+
+            return np.sum((self.cropImg(self.getImageSimu(phi_map)) - img)**2)
+
+        ret_opt = scopt.minimize(optfun, Estart.flatten(), method='CG', options={'disp': True}, args=(img,))
+
+
+        return ret_opt.x.reshape(n, n)
+
+
+
 
     def reconLinear(self,img_input):
         """ Linear reconstructor using synthetic interaction matrix """

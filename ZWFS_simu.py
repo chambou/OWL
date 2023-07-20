@@ -59,8 +59,11 @@ plt.imshow(img_cropped)
 plt.title('ZWFS image')
 plt.show(block=False)
 
+
+
+
+#%% ################## Reconstruction ###########################
 '''
-#%% ################## Recosntruction ###########################
 ZWFS.pupilRec = 'both' # you can choose either: 'right', 'left' or 'both'
 ZWFS.algo = 'JPL' # JPL = iterative arcsin reconstructor / cam also choose GS
 ZWFS.nIterRec = 15 # number of iteration
@@ -83,6 +86,7 @@ plt.title('Reconstructed phase - unwrap')
 plt.colorbar()
 plt.show(block=False)
 '''
+
 #%% Linear iterative reconstruction
 ZWFS.pupilRec = 'left' # you can choose either: 'right', 'left' or 'both'
 ZWFS.nIterRec = 0 # number of iteration
