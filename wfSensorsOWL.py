@@ -500,7 +500,7 @@ class pyramidWFS:
 #   ====================================================================
 
 
-class zernikeWFS:
+class zernikeWFS_owl:
     """
     This is a class to use the Zernike WFS
 

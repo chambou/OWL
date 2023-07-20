@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
----------------- SIMULATION linearity scatter ZERNIKE -----------------------------
+---------------- SEAL - On Bench linearity scatter ZERNIKE -----------------------------
 Script to do linerity Scatter plot for Von Karman PSD
 """
 
@@ -21,25 +21,21 @@ plt.close('all')
 
 
 
-# ----- CREATE ZWFS object ----
-pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
-position_pups = np.load('position_pups.npy') # to match SEAL dimensions
-shannon = 4 # to well oversample the dimple (2 could be enough tough)
-wavelength = 635 # in nm
-diameter = np.array([1,1]) # dimple diameter in L/D - Left pupil and right pupil
-depth = np.array([-np.pi/2,np.pi/2]) # dimple phase shift in radians - Left pupil and right pupil
-ZWFS = zernikeWFS(pupil_im,position_pups,diameter,depth,shannon,wavelength,0) # Create object - 0 = simulation mode
-
 ####### PARAMETERS ###########
 nModes = 300
 nIter = 30 # Iteration for reconstruction 
 nPSD = 1 # Number of phase screen
 errorAMP = np.linspace(0,1,30)
-zer_modes = zernikeBasis(nModes,ZWFS.nPx)
+
+####### SLM ########
+slm = SLM()
+slm.setPhase(np.zeros((slm.nPx,slm.nPx)))
+pup_slm = makePupil(slm.nPx/2,slm.nPx)
+zer_modes = zernikeBasis(nModes,slm.nPx)
 phase2modes = np.linalg.pinv(zer_modes)
 
 # ---- Calibrate ZWFS ----
-#ZWFS.calibrateSimu(zer_modes) # Calibration - Interaction Matrix
+#ZWFS.calibrate(zer_modes) # Calibration - Interaction Matrix
 
 
 # ------ Define Turbulence --------
@@ -48,7 +44,7 @@ fried_parameter = 0.25
 velocity = 8
 outer_scale = 40
 timeSampling = 0.001
-turbu = atm(telescope_diameter,wavelength*1e-09,fried_parameter,velocity,outer_scale,timeSampling,ZWFS.nPx)
+turbu = atm(telescope_diameter,wavelength*1e-09,fried_parameter,velocity,outer_scale,timeSampling,slm.nPx)
 
 # ----- Save Data ------
 E_1 = np.zeros((nPSD,errorAMP.shape[0]))
@@ -73,17 +69,24 @@ for err in errorAMP:
         turbu.setTurbu(k)
         phaseTurbu = np.copy(turbu.phase_screen)	
         phaseTurbu_filtered = np.dot(zer_modes,np.dot(phase2modes,phaseTurbu.ravel()))
-        phaseTurbu_filtered = phaseTurbu_filtered.reshape((ZWFS.nPx,ZWFS.nPx))
-        phaseTurbu_filtered = phaseTurbu_filtered-np.sum(phaseTurbu_filtered)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
-        e_rms = error_rms(phaseTurbu_filtered,np.zeros((ZWFS.nPx,ZWFS.nPx)),ZWFS.pupil_footprint)
-        phaseTurbu_filtered_nPx = phaseTurbu_filtered/e_rms*err # normalization
+        phaseTurbu_filtered = phaseTurbu_filtered.reshape((slm.nPx,slm.nPx))
+        e_rms = error_rms(phaseTurbu_filtered,np.zeros((slm.nPx,slm.nPx)),pup_slm)
+        phaseTurbu_filtered = phaseTurbu_filtered/e_rms*err # normalization
+        phaseTurbu_filtered_nPx = scipy.ndimage.zoom(phaseTurbu_filtered,ZWFS.nPx/slm.nPx)
+        phaseTurbu_filtered_nPx = phaseTurbu_filtered_nPx-np.sum(phaseTurbu_filtered_nPx)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
+        e_rms = error_rms(phaseTurbu_filtered_nPx,np.zeros((ZWFS.nPx,ZWFS.nPx)),ZWFS.pupil_footprint)
+        phaseTurbu_filtered_nPx = phaseTurbu_filtered_nPx/e_rms*err # normalization
 
 
         #############################################
         ######### Optical propagation in ZWFS #######
         #############################################
-
-        img = ZWFS.cropImg(ZWFS.getImageSimu(phaseTurbu_filtered_nPx))
+        
+        # ---- Send phase SLM ---
+        slm.setPhase(-np.flipud(np.fliplr(phaseTurbu_filtered)))
+        time.sleep(0.5)
+        # ----- Get image on ZWFS ----
+        img = ZWFS.getImage()
 
         #############################################
         #########     Reconstruction          #######
@@ -99,7 +102,7 @@ for err in errorAMP:
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_1[k,i] = e_lin_rms
-        '''
+        
         # 2) ----- Linear Reconstruction Model based 1 pupil + 0 iterations -----
         ZWFS.pupilRec = 'both'
         ZWFS.nIterRec = 0
@@ -110,7 +113,7 @@ for err in errorAMP:
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_2[k,i] = e_lin_rms
-        '''
+        
         # 3) ----- Linear Reconstruction Model based 2 pupil + 0 iterations -----
         # Remove piston
         phase = ZWFS.phase_rec-np.sum(ZWFS.phase_rec)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
@@ -118,7 +121,7 @@ for err in errorAMP:
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_3[k,i] = e_lin_rms
-        '''
+        
         # 4) ----- Linear Reconstruction Model based 1 pupil + nIter iterations -----
         ZWFS.pupilRec = 'both'
         ZWFS.nIterRec = nIter
@@ -129,7 +132,7 @@ for err in errorAMP:
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_4[k,i] = e_lin_rms
-        '''
+        
         # 5) ----- Linear Reconstruction Model based 2 pupils + nIter iterations -----
         # Remove piston
         phase = ZWFS.phase_rec-np.sum(ZWFS.phase_rec)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
@@ -137,7 +140,7 @@ for err in errorAMP:
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_5[k,i] = e_lin_rms
-
+        '''
         ############ ASIN APPROACHES ############
         
         # 6) ----- Asin Reconstruction Model based 1 pupil + 0 iterations -----
@@ -145,6 +148,7 @@ for err in errorAMP:
         ZWFS.algo = 'JPL'
         ZWFS.nIterRec = 0
         ZWFS.reconNonLinear(img)
+        ZWFS.phase_rec_right = ZWFS.phase_rec_right-phase0
         # Remove piston
         phase = ZWFS.phase_rec_right-np.sum(ZWFS.phase_rec_right)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
         # Compute RMS error
@@ -153,6 +157,7 @@ for err in errorAMP:
         E_6[k,i] = e_lin_rms
 
         # 7) ----- Asin Reconstruction Model based 2 pupil + 0 iterations -----
+        ZWFS.phase_rec = ZWFS.phase_rec-phase0
         # Remove piston
         phase = ZWFS.phase_rec-np.sum(ZWFS.phase_rec)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
         # Compute RMS error
@@ -165,6 +170,7 @@ for err in errorAMP:
         ZWFS.algo = 'JPL'
         ZWFS.nIterRec = nIter
         ZWFS.reconNonLinear(img)
+        ZWFS.phase_rec_right = ZWFS.phase_rec_right-phase0
         # Remove piston
         phase = ZWFS.phase_rec_right-np.sum(ZWFS.phase_rec)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
         # Compute RMS error
@@ -173,13 +179,14 @@ for err in errorAMP:
         E_8[k,i] = e_lin_rms
 
         # 9) ----- Asin Reconstruction Model based 2 pupils + nIter iterations -----
+        ZWFS.phase_rec = ZWFS.phase_rec-phase0
         # Remove piston
         phase = ZWFS.phase_rec-np.sum(ZWFS.phase_rec)*ZWFS.pupil_footprint/np.sum(ZWFS.pupil_footprint)
         # Compute RMS error
         e_lin_rms = error_rms(phase,phaseTurbu_filtered_nPx,ZWFS.pupil_footprint)
         # Save error in array
         E_9[k,i] = e_lin_rms
-
+        '''
         ############ GS APPROACHES ############
 
         # 10) ----- GS Reconstruction Model based 1 pupil + nIter iterations -----
@@ -219,11 +226,19 @@ plt.close('all')
 plt.figure()
 
 x = errorAMP
-y =E_2[0,:]
-plt.plot(x,y,color='red',label='linear model : 1 pupil + 0 iteration')
+y =E_6[0,:]
+plt.plot(x,y,color='black',label='asin + one pupil + 0 iterations')
 
-y =E_4[0,:]
-plt.plot(x,y,color='blue',label='linear model : 1 pupil + 50 iteration')
+x = errorAMP
+y =E_8[0,:]
+plt.plot(x,y,color='red',label='asin + one pupil + 30 iterations')
+
+x = errorAMP
+y =E_7[0,:]
+plt.plot(x,y,color='green',label='asin + both pupil + 0 iterations')
+
+y =E_9[0,:]
+plt.plot(x,y,color='blue',label='asin + both pupil + 30 iterations')
 
 #y =E_8[0,:]
 #plt.plot(x,y,color='purple',label='asin model : 1 pupil + 10 iteration')

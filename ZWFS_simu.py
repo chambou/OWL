@@ -8,6 +8,7 @@ from wfSensors import *
 from turbulence import *
 from tools import *
 
+plt.close('all')
 #%% ################ ZWFS #########################################
 pupil_im = np.load('pupil_im.npy') # Load SEAL pupil for more realistic simulation
 pup = makePupil(pupil_im.shape[1]/2,pupil_im.shape[1]) # if you prefer to start with perfect full circular aperture
@@ -58,7 +59,7 @@ plt.imshow(img_cropped)
 plt.title('ZWFS image')
 plt.show(block=False)
 
-
+'''
 #%% ################## Recosntruction ###########################
 ZWFS.pupilRec = 'both' # you can choose either: 'right', 'left' or 'both'
 ZWFS.algo = 'JPL' # JPL = iterative arcsin reconstructor / cam also choose GS
@@ -81,13 +82,13 @@ plt.imshow(ZWFS.phase_rec_unwrap)
 plt.title('Reconstructed phase - unwrap')
 plt.colorbar()
 plt.show(block=False)
-
+'''
 #%% Linear iterative reconstruction
-ZWFS.pupilRec = 'both' # you can choose either: 'right', 'left' or 'both'
-ZWFS.nIterRec = 10 # number of iteration
+ZWFS.pupilRec = 'left' # you can choose either: 'right', 'left' or 'both'
+ZWFS.nIterRec = 0 # number of iteration
 
 ZWFS.reconLinearModel(img_cropped) # Reconstructiom
-
+'''
 # ---- Plot -----
 plt.figure(figsize=(12,3))
 plt.subplot(131)
@@ -103,4 +104,4 @@ plt.imshow(ZWFS.phase_rec_unwrap)
 plt.title('Reconstructed phase - unwrap')
 plt.colorbar()
 plt.show(block=False)
-
+'''

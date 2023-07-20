@@ -132,7 +132,7 @@ def zwfs_iterative_reconstruct(Imeas, zwfs, aperture, wavelength, nphot, mask, p
 	else:
 		raise NotImplementedError()
 
-	phase[mask] -= np.median(phase[mask])
+	#Ephase[mask] -= np.median(phase[mask])
 	return phase
 
 def make_seal_pupil(sealZWFS, index=0):
@@ -187,8 +187,14 @@ if __name__ == "__main__":
 	# The ZWFS parameters. This is all for the left pupil
 	wavelength = 1
 	nphot = 1
-	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = -np.pi/2, phase_dot_diameter=1.0, num_pix=15, pupil_diameter=Dtel)
-	Iref = local_zwfs(wf).power
+	local_zwfs = ZernikeWavefrontSensorOptics(grid, phase_step = np.pi/2, phase_dot_diameter=1.0, num_pix=64, pupil_diameter=Dtel)
+	tt = TipTiltMirror(grid)
+	model_zwfs = OpticalSystem([tt, local_zwfs])
+	tt.actuators[0] = -0.06
+	tt.actuators[1] = -0.06
+	Iref = model_zwfs(wf).power
+	plt.figure();imshow_field(Iref);plt.show(block=False);
+
 
 	# Make the zernike basis
 	num_modes = 20
@@ -196,8 +202,8 @@ if __name__ == "__main__":
 
 	# The hardware interface
 	#sealZWFS = make_seal_interface()
-	#sealZWFS = ZWFS
-	sealSLM = SLM()
+	sealZWFS = ZWFS
+	#sealSLM = SLM()
 	slm_grid = make_pupil_grid(sealSLM.nPx, 1.0)
 	zmodes_slm = make_zernike_basis(num_modes, Dtel, slm_grid, 5)
 
@@ -233,21 +239,21 @@ if __name__ == "__main__":
 			measurements[i] = process_seal_vzwfs(image, grid)
 
 			apod = PhaseApodizer(delta_phases[i])
-			wfout = local_zwfs(apod(wf))
+			wfout = model_zwfs(apod(wf))
 			model_measurements[i] = wfout.power
 		
 		plt.subplot(2, nmeas, i+1)
 		imshow_field(measurements[i])
-		plt.subplot(2, nmeas, i+6)
+		plt.subplot(2, nmeas, i+nmeas+1)
 		imshow_field(model_measurements[i])
 	plt.show()
 
 	phase_est = grid.zeros()
 	for k in range(5):
-		phase_est = zwfs_iterative_reconstruct(measurements[0], local_zwfs, aperture, wavelength, nphot, mask, phase_est, mode='nonlinear')
+		phase_est = zwfs_iterative_reconstruct(measurements[0], model_zwfs, aperture, wavelength, nphot, mask, phase_est, mode='nonlinear')
 		#phase_est = zwfs_multistep_reconstruct(measurements, delta_phases, local_zwfs, aperture, wavelength, nphot, mask, phase_est, apply_unwrapping=False, lobasis=None)
 
-	scale = abs(phase_est).max()
+	scale = np.pi/2 #abs(phase_est).max()
 	plt.subplot(1,2,1)
 	imshow_field(phase_aberration, vmin=-scale, vmax=scale, cmap='bwr')
 	plt.colorbar()
